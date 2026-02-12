@@ -54,9 +54,96 @@ SENSOR_MAP = {
 }
 
 # GraphQL Queries
-QUERY_MAIN = """<— bleibt unverändert —>"""
-QUERY_LIVE = """<— bleibt unverändert —>"""
-QUERY_TOP = """<— bleibt unverändert —>"""
+# Daily totals (previous 24h)
+QUERY_MAIN = """
+query ($zoneTag: String!, $start: Time!, $end: Time!) {
+    viewer {
+        zones(filter: { zoneTag: $zoneTag }) {
+            httpRequests1dGroups(
+                limit: 1
+                filter: { datetime_geq: $start, datetime_leq: $end }
+            ) {
+                sum {
+                    requests
+                    cachedRequests
+                    threats
+                    encryptedRequests
+                    unencryptedRequests
+                    bytes
+                    cachedBytes
+                    edgeResponseBytes
+                    originResponseBytes
+                    status {
+                        code
+                        count
+                    }
+                }
+                uniq {
+                    uniques
+                }
+            }
+        }
+    }
+}
+"""
+
+# Live traffic (rolling 5 minutes)
+QUERY_LIVE = """
+query ($zoneTag: String!) {
+    viewer {
+        zones(filter: { zoneTag: $zoneTag }) {
+            httpRequestsAdaptiveGroups(
+                limit: 1
+                filter: { datetime_geq: "-300 seconds" }
+            ) {
+                sum {
+                    requests
+                    bytes
+                    threats
+                    botRequests
+                }
+                uniq {
+                    uniques
+                }
+            }
+        }
+    }
+}
+"""
+
+# Top lists for previous 24h
+QUERY_TOP = """
+query ($zoneTag: String!, $start: Time!, $end: Time!) {
+    viewer {
+        zones(filter: { zoneTag: $zoneTag }) {
+            countries: httpRequests1dGroups(
+                limit: 5
+                orderBy: [sum_requests_DESC]
+                filter: { datetime_geq: $start, datetime_leq: $end }
+            ) {
+                dimensions { clientCountryName }
+                sum { requests }
+            }
+            urls: httpRequests1dGroups(
+                limit: 5
+                orderBy: [sum_requests_DESC]
+                filter: { datetime_geq: $start, datetime_leq: $end }
+            ) {
+                dimensions { clientRequestPath }
+                sum { requests }
+            }
+            agents: httpRequests1dGroups(
+                limit: 5
+                orderBy: [sum_requests_DESC]
+                filter: { datetime_geq: $start, datetime_leq: $end }
+            ) {
+                dimensions { userAgent }
+                sum { requests }
+            }
+        }
+    }
+}
+"""
 
 
 # ---------------------------------------------------------
@@ -177,7 +264,11 @@ class CloudflareAPI:
             headers=headers,
             data=json.dumps({
                 "query": QUERY_TOP,
-                "variables": {"zoneTag": self.zone_id},
+                "variables": {
+                    "zoneTag": self.zone_id,
+                    "start": start.isoformat(timespec="seconds") + "Z",
+                    "end": end.isoformat(timespec="seconds") + "Z",
+                },
             }),
             timeout=15,
         ).json()
