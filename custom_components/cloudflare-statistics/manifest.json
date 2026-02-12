@@ -1,0 +1,10 @@
+{
+  "domain": "cloudflare-statistics",
+  "name": "Cloudflare Statistics",
+  "version": "0.1.0",
+  "documentation": "https://humanengine.net",
+  "requirements": [],
+  "codeowners": ["@SimonBauske"],
+  "iot_class": "cloud_polling",
+  "config_flow": true
+}
