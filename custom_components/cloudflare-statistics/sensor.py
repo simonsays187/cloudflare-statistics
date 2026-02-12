@@ -3,10 +3,19 @@ import json
 from datetime import datetime, timedelta
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.util import Throttle
-from .const import DOMAIN, CONF_ZONE_ID, CONF_API_TOKEN
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+
+from .const import (
+    DOMAIN,
+    CONF_ZONE_ID,
+    CONF_API_TOKEN,
+)
 
 MIN_TIME_BETWEEN_UPDATES = timedelta(seconds=60)
 
+# Sensor definitions
 SENSOR_MAP = {
     # Main totals
     "requests_all": ("Requests (All)", lambda d: d.get("requests_all")),
@@ -45,117 +54,36 @@ SENSOR_MAP = {
 }
 
 # GraphQL Queries
-QUERY_MAIN = """
-query($zoneTag: String!, $start: Time!, $end: Time!) {
-  viewer {
-    zones(filter: {zoneTag: $zoneTag}) {
-      httpRequests1dGroups(
-        limit: 1
-        filter: {datetime_geq: $start, datetime_lt: $end}
-      ) {
-        sum {
-          requests
-          cachedRequests
-          cachedBytes
-          bytes
-          threats
-          encryptedRequests
-          unencryptedRequests
-          status {
-            code
-            count
-          }
-          edgeResponseBytes
-          originResponseBytes
-        }
-        uniq {
-          uniques
-        }
-      }
-    }
-  }
-}
-"""
+QUERY_MAIN = """<— bleibt unverändert —>"""
+QUERY_LIVE = """<— bleibt unverändert —>"""
+QUERY_TOP = """<— bleibt unverändert —>"""
 
-QUERY_LIVE = """
-query($zoneTag: String!) {
-  viewer {
-    zones(filter: {zoneTag: $zoneTag}) {
-      httpRequestsAdaptiveGroups(
-        limit: 1
-        filter: {interval: "5_MINUTE"}
-      ) {
-        sum {
-          requests
-          bytes
-          threats
-          botRequests
-        }
-        uniq {
-          uniques
-        }
-      }
-    }
-  }
-}
-"""
 
-QUERY_TOP = """
-query($zoneTag: String!) {
-  viewer {
-    zones(filter: {zoneTag: $zoneTag}) {
+# ---------------------------------------------------------
+# NEW: async_setup_entry (replaces setup_platform)
+# ---------------------------------------------------------
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
 
-      # Top Countries
-      countries: httpRequests1dGroups(
-        limit: 10
-        orderBy: [sum_requests_DESC]
-        filter: {dimensions: ["clientCountryName"]}
-      ) {
-        dimensions { clientCountryName }
-        sum { requests }
-      }
-
-      # Top URLs
-      urls: httpRequests1dGroups(
-        limit: 10
-        orderBy: [sum_requests_DESC]
-        filter: {dimensions: ["clientRequestPath"]}
-      ) {
-        dimensions { clientRequestPath }
-        sum { requests }
-      }
-
-      # Top User Agents
-      agents: httpRequests1dGroups(
-        limit: 10
-        orderBy: [sum_requests_DESC]
-        filter: {dimensions: ["userAgent"]}
-      ) {
-        dimensions { userAgent }
-        sum { requests }
-      }
-    }
-  }
-}
-"""
-
-def setup_platform(hass, config, add_entities, discovery_info=None):
-    if discovery_info is None:
-        return
-
-    zone_id = discovery_info[CONF_ZONE_ID]
-    api_token = discovery_info[CONF_API_TOKEN]
+    zone_id = entry.data[CONF_ZONE_ID]
+    api_token = entry.data[CONF_API_TOKEN]
 
     api = CloudflareAPI(zone_id, api_token)
 
     sensors = [
-        CloudflareSensor(api, key, name, extractor)
+        CloudflareSensor(api, entry.entry_id, key, name, extractor)
         for key, (name, extractor) in SENSOR_MAP.items()
     ]
 
-    add_entities(sensors, True)
+    async_add_entities(sensors, True)
 
 
+# ---------------------------------------------------------
+# API class (unchanged except for multi-entry compatibility)
+# ---------------------------------------------------------
 class CloudflareAPI:
     def __init__(self, zone_id, api_token):
         self.zone_id = zone_id
@@ -257,7 +185,6 @@ class CloudflareAPI:
         try:
             zones = r3["data"]["viewer"]["zones"][0]
 
-            # Top Countries
             self.data["top_countries"] = json.dumps([
                 {
                     "country": item["dimensions"]["clientCountryName"],
@@ -266,7 +193,6 @@ class CloudflareAPI:
                 for item in zones["countries"]
             ])
 
-            # Top URLs
             self.data["top_urls"] = json.dumps([
                 {
                     "url": item["dimensions"]["clientRequestPath"],
@@ -275,7 +201,6 @@ class CloudflareAPI:
                 for item in zones["urls"]
             ])
 
-            # Top User Agents
             self.data["top_useragents"] = json.dumps([
                 {
                     "agent": item["dimensions"]["userAgent"],
@@ -288,13 +213,16 @@ class CloudflareAPI:
             print("Error parsing top GraphQL:", e, r3)
 
 
+# ---------------------------------------------------------
+# Sensor Entity (now multi-entry aware)
+# ---------------------------------------------------------
 class CloudflareSensor(SensorEntity):
-    def __init__(self, api, key, name, extractor):
+    def __init__(self, api, entry_id, key, name, extractor):
         self.api = api
         self._key = key
         self._extractor = extractor
         self._attr_name = f"Cloudflare {name}"
-        self._attr_unique_id = f"cloudflare_{key}"
+        self._attr_unique_id = f"cloudflare_{entry_id}_{key}"
         self._state = None
 
     def update(self):
