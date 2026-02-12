@@ -2,7 +2,7 @@
   "domain": "cloudflare-statistics",
   "name": "Cloudflare Statistics",
   "version": "0.1.0",
-  "documentation": "https://humanengine.net",
+  "documentation": "https://github.com/simonsays187/cloudflare-statistics",
   "requirements": [],
   "codeowners": ["@SimonBauske"],
   "iot_class": "cloud_polling",
