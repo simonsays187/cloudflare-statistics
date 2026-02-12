@@ -2,10 +2,10 @@ import voluptuous as vol
 from homeassistant import config_entries
 from .const import DOMAIN, CONF_ZONE_ID, CONF_API_TOKEN, CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
 
-class CloudflareConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+class CloudflareStatisticsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_user(self, user_input=None):
         if user_input is not None:
-            return self.async_create_entry(title="Cloudflare Stats", data=user_input)
+            return self.async_create_entry(title="Cloudflare Statistics", data=user_input)
 
         schema = vol.Schema({
             vol.Required(CONF_ZONE_ID): str,

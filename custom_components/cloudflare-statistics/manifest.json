@@ -1,5 +1,5 @@
 {
-  "domain": "cloudflare-statistics",
+  "domain": "cloudflare_statistics",
   "name": "Cloudflare Statistics",
   "version": "0.1.0",
   "documentation": "https://github.com/simonsays187/cloudflare-statistics",
