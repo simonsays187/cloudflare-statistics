@@ -1,7 +1,7 @@
 {
   "domain": "cloudflare_statistics",
   "name": "Cloudflare Statistics",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "documentation": "https://github.com/simonsays187/cloudflare-statistics",
   "requirements": [],
   "codeowners": ["@SimonBauske"],
