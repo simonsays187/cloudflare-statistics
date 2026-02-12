@@ -6,12 +6,19 @@ from .const import DOMAIN, CONF_ZONE_ID, CONF_API_TOKEN, CONF_SCAN_INTERVAL
 
 MIN_TIME_BETWEEN_UPDATES = timedelta(seconds=60)
 
-SENSOR_TYPES = {
-    "pageviews": "Pageviews Today",
-    "unique_visitors": "Unique Visitors Today",
-    "bots": "Bots Today",
-    "threats": "Threats Today",
-    "cached_requests": "Cached Requests Today",
+SENSOR_MAP = {
+    "requests_all": ("Requests (All)", lambda d: d["requests"]["all"]),
+    "requests_cached": ("Requests (Cached)", lambda d: d["requests"]["cached"]),
+    "requests_uncached": ("Requests (Uncached)", lambda d: d["requests"]["uncached"]),
+    "requests_bot": ("Requests (Bots)", lambda d: d["requests"]["bot"]),
+    "requests_ssl_encrypted": ("Requests (SSL Encrypted)", lambda d: d["requests"]["ssl"]["encrypted"]),
+    "requests_ssl_unencrypted": ("Requests (SSL Unencrypted)", lambda d: d["requests"]["ssl"]["unencrypted"]),
+    "uniques_all": ("Unique Visitors", lambda d: d["uniques"]["all"]),
+    "threats_all": ("Threats (All)", lambda d: d["threats"]["all"]),
+    "threats_blocked": ("Threats (Blocked)", lambda d: d["threats"]["blocked"]),
+    "bandwidth_all": ("Bandwidth (All Bytes)", lambda d: d["bandwidth"]["all"]),
+    "bandwidth_cached": ("Bandwidth (Cached Bytes)", lambda d: d["bandwidth"]["cached"]),
+    "bandwidth_uncached": ("Bandwidth (Uncached Bytes)", lambda d: d["bandwidth"]["uncached"]),
 }
 
 def setup_platform(hass, config, add_entities, discovery_info=None):
@@ -20,22 +27,21 @@ def setup_platform(hass, config, add_entities, discovery_info=None):
 
     zone_id = discovery_info[CONF_ZONE_ID]
     api_token = discovery_info[CONF_API_TOKEN]
-    scan_interval = discovery_info.get(CONF_SCAN_INTERVAL, 300)
 
-    api = CloudflareAPI(zone_id, api_token, scan_interval)
+    api = CloudflareAPI(zone_id, api_token)
 
     sensors = [
-        CloudflareSensor(api, key, name)
-        for key, name in SENSOR_TYPES.items()
+        CloudflareSensor(api, key, name, extractor)
+        for key, (name, extractor) in SENSOR_MAP.items()
     ]
 
     add_entities(sensors, True)
 
+
 class CloudflareAPI:
-    def __init__(self, zone_id, api_token, scan_interval):
+    def __init__(self, zone_id, api_token):
         self.zone_id = zone_id
         self.api_token = api_token
-        self.scan_interval = scan_interval
         self.data = {}
 
     @Throttle(MIN_TIME_BETWEEN_UPDATES)
@@ -46,26 +52,24 @@ class CloudflareAPI:
         response = requests.get(url, headers=headers, timeout=10)
         json_data = response.json()
 
-        totals = json_data["result"]["totals"]
+        self.data = json_data["result"]["totals"]
 
-        self.data = {
-            "pageviews": totals["requests"]["all"],
-            "unique_visitors": totals["uniques"]["all"],
-            "bots": totals["requests"]["bot"],
-            "threats": totals["threats"]["all"],
-            "cached_requests": totals["requests"]["cached"],
-        }
 
 class CloudflareSensor(SensorEntity):
-    def __init__(self, api, key, name):
+    def __init__(self, api, key, name, extractor):
         self.api = api
         self._key = key
+        self._extractor = extractor
         self._attr_name = f"Cloudflare {name}"
+        self._attr_unique_id = f"cloudflare_{key}"
         self._state = None
 
     def update(self):
         self.api.update()
-        self._state = self.api.data.get(self._key)
+        try:
+            self._state = self._extractor(self.api.data)
+        except Exception:
+            self._state = None
 
     @property
     def native_value(self):
