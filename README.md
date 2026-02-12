@@ -179,20 +179,4 @@ Each value becomes a sensor, for example:
     config/custom_components/cloudflare-statistics/
     ```
 
----
 
-# 📄 License
-
-MIT License (or your preferred license)
-
----
-
-If you want, I can also generate:
-
-- a polished **GitHub description**  
-- a **release changelog**  
-- a **HACS badge section**  
-- a **demo screenshot section**  
-- or a **version 0.2 README** with advanced features  
-
-Just tell me what you want next.
