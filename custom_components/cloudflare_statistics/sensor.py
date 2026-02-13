@@ -20,112 +20,27 @@ _LOGGER = logging.getLogger(__name__)
 
 # Sensor definitions
 SENSOR_MAP = {
-    # Main totals
-    "requests_all": ("Requests (All)", lambda d: d.get("requests_all")),
-    "requests_cached": ("Requests (Cached)", lambda d: d.get("requests_cached")),
-    "requests_uncached": ("Requests (Uncached)", lambda d: d.get("requests_uncached")),
-    "requests_threats": ("Threats", lambda d: d.get("requests_threats")),
-    "requests_bot": ("Bots", lambda d: d.get("requests_bot")),
-    "requests_ssl_encrypted": ("SSL Encrypted Requests", lambda d: d.get("requests_ssl_encrypted")),
-    "requests_ssl_unencrypted": ("SSL Unencrypted Requests", lambda d: d.get("requests_ssl_unencrypted")),
-    "uniques_all": ("Unique Visitors", lambda d: d.get("uniques_all")),
-    "bandwidth_all": ("Bandwidth (All Bytes)", lambda d: d.get("bandwidth_all")),
-    "bandwidth_cached": ("Bandwidth (Cached Bytes)", lambda d: d.get("bandwidth_cached")),
-    "bandwidth_uncached": ("Bandwidth (Uncached Bytes)", lambda d: d.get("bandwidth_uncached")),
-
-    # HTTP Statuscodes
-    "status_200": ("HTTP 200", lambda d: d.get("status_200")),
-    "status_301": ("HTTP 301", lambda d: d.get("status_301")),
-    "status_404": ("HTTP 404", lambda d: d.get("status_404")),
-    "status_500": ("HTTP 500", lambda d: d.get("status_500")),
-
-    # Edge vs Origin
-    "edge_requests": ("Edge Response Bytes", lambda d: d.get("edge_requests")),
-    "origin_requests": ("Origin Response Bytes", lambda d: d.get("origin_requests")),
-
-    # Live traffic (5 min)
-    "live_requests": ("Live Requests (5m)", lambda d: d.get("live_requests")),
-    "live_bandwidth": ("Live Bandwidth (5m Bytes)", lambda d: d.get("live_bandwidth")),
-    "live_threats": ("Live Threats (5m)", lambda d: d.get("live_threats")),
-    "live_bots": ("Live Bots (5m)", lambda d: d.get("live_bots")),
-    "live_uniques": ("Live Uniques (5m)", lambda d: d.get("live_uniques")),
-
-    # Top stats (JSON)
-    "top_countries": ("Top Countries (JSON)", lambda d: d.get("top_countries")),
-    "top_urls": ("Top URLs (JSON)", lambda d: d.get("top_urls")),
-    "top_useragents": ("Top User Agents (JSON)", lambda d: d.get("top_useragents")),
+    "views_today": ("Views Today", lambda d: d.get("views_today")),
+    "views_week": ("Views Week", lambda d: d.get("views_week")),
+    "views_month": ("Views Month", lambda d: d.get("views_month")),
+    "uniques_today": ("Uniques Today", lambda d: d.get("uniques_today")),
+    "uniques_week": ("Uniques Week", lambda d: d.get("uniques_week")),
+    "uniques_month": ("Uniques Month", lambda d: d.get("uniques_month")),
 }
 
-# GraphQL Queries
-# Daily totals (previous 24h) using supported fields
-QUERY_MAIN = """
+# GraphQL Query: per-day buckets (max 30 days back)
+QUERY_DAILY = """
 query ($zoneTag: String!, $start: Date!, $end: Date!) {
     viewer {
         zones(filter: { zoneTag: $zoneTag }) {
             httpRequests1dGroups(
-                limit: 1
+                limit: 30
+                orderBy: [date_ASC]
                 filter: { date_geq: $start, date_leq: $end }
             ) {
-                sum {
-                    requests
-                    cachedRequests
-                    threats
-                    bytes
-                    cachedBytes
-                    status { code count }
-                }
+                dimensions { date }
+                sum { requests }
                 uniq { uniques }
-            }
-        }
-    }
-}
-"""
-
-# Live traffic (rolling 5 minutes) — keep minimal stable fields
-QUERY_LIVE = """
-query ($zoneTag: String!, $start: DateTime!, $end: DateTime!) {
-    viewer {
-        zones(filter: { zoneTag: $zoneTag }) {
-            httpRequestsAdaptiveGroups(
-                limit: 1
-                filter: { datetime_geq: $start, datetime_leq: $end }
-            ) {
-                sum { requests bytes threats } 
-                uniq { uniques }
-            }
-        }
-    }
-}
-"""
-
-# Top lists for previous 24h — supported dims
-QUERY_TOP = """
-query ($zoneTag: String!, $start: Date!, $end: Date!) {
-    viewer {
-        zones(filter: { zoneTag: $zoneTag }) {
-            countries: httpRequests1dGroups(
-                limit: 5
-                orderBy: [sum_requests_DESC]
-                filter: { date_geq: $start, date_leq: $end }
-            ) {
-                dimensions { clientCountryName }
-                sum { requests }
-            }
-            urls: httpRequests1dGroups(
-                limit: 5
-                orderBy: [sum_requests_DESC]
-                filter: { date_geq: $start, date_leq: $end }
-            ) {
-                dimensions { clientRequestPath }
-                sum { requests }
-            }
-            agents: httpRequests1dGroups(
-                limit: 5
-                orderBy: [sum_requests_DESC]
-                filter: { date_geq: $start, date_leq: $end }
-            ) {
-                dimensions { userAgent }
-                sum { requests }
             }
         }
     }
@@ -134,7 +49,7 @@ query ($zoneTag: String!, $start: Date!, $end: Date!) {
 
 
 # ---------------------------------------------------------
-# NEW: async_setup_entry (replaces setup_platform)
+# async_setup_entry
 # ---------------------------------------------------------
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -156,7 +71,7 @@ async def async_setup_entry(
 
 
 # ---------------------------------------------------------
-# API class (unchanged except for multi-entry compatibility)
+# API class
 # ---------------------------------------------------------
 class CloudflareAPI:
     def __init__(self, zone_id, api_token):
@@ -173,192 +88,88 @@ class CloudflareAPI:
             "Content-Type": "application/json",
         }
 
-        end = datetime.utcnow()
-        start = end - timedelta(days=1)
-        live_start = end - timedelta(minutes=5)
+        end = datetime.utcnow().date()
+        start_30 = end - timedelta(days=30)
 
-        start_date = start.date().isoformat()
-        end_date = end.date().isoformat()
-
-        # MAIN QUERY
         try:
-            r1_resp = requests.post(
+            r_resp = requests.post(
                 "https://api.cloudflare.com/client/v4/graphql",
                 headers=headers,
                 data=json.dumps({
-                    "query": QUERY_MAIN,
+                    "query": QUERY_DAILY,
                     "variables": {
                         "zoneTag": self.zone_id,
-                        "start": start_date,
-                        "end": end_date,
+                        "start": start_30.isoformat(),
+                        "end": end.isoformat(),
                     },
                 }),
                 timeout=15,
             )
-            r1 = r1_resp.json()
+            r = r_resp.json()
         except Exception:
-            _LOGGER.exception("Cloudflare main query request failed")
-            r1 = {}
+            _LOGGER.exception("Cloudflare daily query request failed")
+            r = {}
 
-        if not isinstance(r1, dict):
-            _LOGGER.error("Cloudflare main query returned non-dict response")
-            r1 = {}
+        if not isinstance(r, dict):
+            _LOGGER.error("Cloudflare daily query returned non-dict response")
+            r = {}
 
-        if r1.get("errors"):
-            _LOGGER.error("Cloudflare main query errors: %s", r1.get("errors"))
+        if r.get("errors"):
+            _LOGGER.error("Cloudflare daily query errors: %s", r.get("errors"))
 
         try:
-            zones = r1.get("data", {}).get("viewer", {}).get("zones") or []
+            zones = r.get("data", {}).get("viewer", {}).get("zones") or []
             groups = zones[0].get("httpRequests1dGroups") if zones else None
             if not groups:
-                _LOGGER.debug("No main GraphQL data returned")
-            else:
-                group = groups[0]
-                s = group.get("sum", {})
-                u = group.get("uniq", {})
+                _LOGGER.debug("No daily GraphQL data returned")
+                return
 
-                requests_val = s.get("requests")
-                cached_val = s.get("cachedRequests") or 0
+            today = end
+            week_threshold = end - timedelta(days=6)  # today + previous 6
+            month_threshold = end - timedelta(days=29)  # 30 days window
 
-                if requests_val is not None:
-                    self.data["requests_all"] = requests_val
-                    self.data["requests_cached"] = cached_val
-                    self.data["requests_uncached"] = requests_val - cached_val
+            views_today = 0
+            views_week = 0
+            views_month = 0
+            uniques_today = 0
+            uniques_week = 0
+            uniques_month = 0
 
-                self.data["requests_threats"] = s.get("threats")
-                self.data["requests_ssl_encrypted"] = s.get("encryptedRequests")
-                self.data["requests_ssl_unencrypted"] = None
+            for item in groups:
+                date_str = item.get("dimensions", {}).get("date")
+                try:
+                    bucket_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+                except Exception:
+                    continue
 
-                self.data["bandwidth_all"] = s.get("bytes")
-                self.data["bandwidth_cached"] = s.get("cachedBytes")
-                if s.get("bytes") is not None and s.get("cachedBytes") is not None:
-                    self.data["bandwidth_uncached"] = s.get("bytes") - s.get("cachedBytes")
+                s = item.get("sum", {})
+                u = item.get("uniq", {})
+                req = s.get("requests") or 0
+                uni = u.get("uniques") or 0
 
-                self.data["uniques_all"] = u.get("uniques")
+                if bucket_date == today:
+                    views_today += req
+                    uniques_today += uni
+                if week_threshold <= bucket_date <= today:
+                    views_week += req
+                    uniques_week += uni
+                if month_threshold <= bucket_date <= today:
+                    views_month += req
+                    uniques_month += uni
 
-                for status in s.get("status", []):
-                    code = status.get("code")
-                    count = status.get("count")
-                    if code is not None:
-                        self.data[f"status_{code}"] = count
-
-                self.data["edge_requests"] = None
-                self.data["origin_requests"] = None
-
-        except Exception as e:
-            _LOGGER.exception("Error parsing main GraphQL: %s", e)
-
-        # LIVE QUERY
-        try:
-            r2_resp = requests.post(
-                "https://api.cloudflare.com/client/v4/graphql",
-                headers=headers,
-                data=json.dumps({
-                    "query": QUERY_LIVE,
-                    "variables": {
-                        "zoneTag": self.zone_id,
-                        "start": live_start.isoformat(timespec="seconds") + "Z",
-                        "end": end.isoformat(timespec="seconds") + "Z",
-                    },
-                }),
-                timeout=15,
-            )
-            r2 = r2_resp.json()
-        except Exception:
-            _LOGGER.exception("Cloudflare live query request failed")
-            r2 = {}
-
-        if not isinstance(r2, dict):
-            _LOGGER.error("Cloudflare live query returned non-dict response")
-            r2 = {}
-
-        if r2.get("errors"):
-            _LOGGER.error("Cloudflare live query errors: %s", r2.get("errors"))
-
-        try:
-            zones = r2.get("data", {}).get("viewer", {}).get("zones") or []
-            groups = zones[0].get("httpRequestsAdaptiveGroups") if zones else None
-            if not groups:
-                _LOGGER.debug("No live GraphQL data returned")
-            else:
-                live = groups[0]
-                s = live.get("sum", {})
-                u = live.get("uniq", {})
-
-                requests_val = s.get("requests")
-                self.data["live_requests"] = requests_val
-                self.data["live_bandwidth"] = s.get("bytes")
-                self.data["live_threats"] = s.get("threats")
-                self.data["live_bots"] = None
-                self.data["live_uniques"] = u.get("uniques")
+            self.data["views_today"] = views_today
+            self.data["views_week"] = views_week
+            self.data["views_month"] = views_month
+            self.data["uniques_today"] = uniques_today
+            self.data["uniques_week"] = uniques_week
+            self.data["uniques_month"] = uniques_month
 
         except Exception as e:
-            _LOGGER.exception("Error parsing live GraphQL: %s", e)
-
-        # TOP QUERY
-        try:
-            r3_resp = requests.post(
-                "https://api.cloudflare.com/client/v4/graphql",
-                headers=headers,
-                data=json.dumps({
-                    "query": QUERY_TOP,
-                    "variables": {
-                        "zoneTag": self.zone_id,
-                        "start": start_date,
-                        "end": end_date,
-                    },
-                }),
-                timeout=15,
-            )
-            r3 = r3_resp.json()
-        except Exception:
-            _LOGGER.exception("Cloudflare top query request failed")
-            r3 = {}
-
-        if not isinstance(r3, dict):
-            _LOGGER.error("Cloudflare top query returned non-dict response")
-            r3 = {}
-
-        if r3.get("errors"):
-            _LOGGER.error("Cloudflare top query errors: %s", r3.get("errors"))
-
-        try:
-            zones = r3.get("data", {}).get("viewer", {}).get("zones") or []
-            if not zones:
-                _LOGGER.debug("No top GraphQL data returned")
-            else:
-                zone = zones[0]
-
-                self.data["top_countries"] = json.dumps([
-                    {
-                        "country": item.get("dimensions", {}).get("clientCountryName"),
-                        "requests": item.get("sum", {}).get("requests") or item.get("sum", {}).get("requestCount"),
-                    }
-                    for item in zone.get("countries", [])
-                ])
-
-                self.data["top_urls"] = json.dumps([
-                    {
-                        "url": item.get("dimensions", {}).get("clientRequestPath"),
-                        "requests": item.get("sum", {}).get("requests") or item.get("sum", {}).get("requestCount"),
-                    }
-                    for item in zone.get("urls", [])
-                ])
-
-                self.data["top_useragents"] = json.dumps([
-                    {
-                        "agent": item.get("dimensions", {}).get("userAgent"),
-                        "requests": item.get("sum", {}).get("requests") or item.get("sum", {}).get("requestCount"),
-                    }
-                    for item in zone.get("agents", [])
-                ])
-
-        except Exception as e:
-            _LOGGER.exception("Error parsing top GraphQL: %s", e)
+            _LOGGER.exception("Error parsing daily GraphQL: %s", e)
 
 
 # ---------------------------------------------------------
-# Sensor Entity (now multi-entry aware)
+# Sensor Entity
 # ---------------------------------------------------------
 class CloudflareSensor(SensorEntity):
     def __init__(self, api, entry_id, key, name, extractor):
