@@ -59,12 +59,12 @@ SENSOR_MAP = {
 # GraphQL Queries
 # Daily totals (previous 24h)
 QUERY_MAIN = """
-query ($zoneTag: String!, $start: Time!, $end: Time!) {
+query ($zoneTag: String!, $start: Date!, $end: Date!) {
     viewer {
         zones(filter: { zoneTag: $zoneTag }) {
             httpRequests1dGroups(
                 limit: 1
-                filter: { datetime_geq: $start, datetime_leq: $end }
+                filter: { date_geq: $start, date_leq: $end }
             ) {
                 sum {
                     requests
@@ -92,7 +92,7 @@ query ($zoneTag: String!, $start: Time!, $end: Time!) {
 
 # Live traffic (rolling 5 minutes)
 QUERY_LIVE = """
-query ($zoneTag: String!, $start: Time!, $end: Time!) {
+query ($zoneTag: String!, $start: DateTime!, $end: DateTime!) {
     viewer {
         zones(filter: { zoneTag: $zoneTag }) {
             httpRequestsAdaptiveGroups(
@@ -116,13 +116,13 @@ query ($zoneTag: String!, $start: Time!, $end: Time!) {
 
 # Top lists for previous 24h
 QUERY_TOP = """
-query ($zoneTag: String!, $start: Time!, $end: Time!) {
+query ($zoneTag: String!, $start: Date!, $end: Date!) {
     viewer {
         zones(filter: { zoneTag: $zoneTag }) {
             countries: httpRequests1dGroups(
                 limit: 5
                 orderBy: [sum_requests_DESC]
-                filter: { datetime_geq: $start, datetime_leq: $end }
+                filter: { date_geq: $start, date_leq: $end }
             ) {
                 dimensions { clientCountryName }
                 sum { requests }
@@ -130,7 +130,7 @@ query ($zoneTag: String!, $start: Time!, $end: Time!) {
             urls: httpRequests1dGroups(
                 limit: 5
                 orderBy: [sum_requests_DESC]
-                filter: { datetime_geq: $start, datetime_leq: $end }
+                filter: { date_geq: $start, date_leq: $end }
             ) {
                 dimensions { clientRequestPath }
                 sum { requests }
@@ -138,7 +138,7 @@ query ($zoneTag: String!, $start: Time!, $end: Time!) {
             agents: httpRequests1dGroups(
                 limit: 5
                 orderBy: [sum_requests_DESC]
-                filter: { datetime_geq: $start, datetime_leq: $end }
+                filter: { date_geq: $start, date_leq: $end }
             ) {
                 dimensions { userAgent }
                 sum { requests }
@@ -193,6 +193,9 @@ class CloudflareAPI:
         start = end - timedelta(days=1)
         live_start = end - timedelta(minutes=5)
 
+        start_date = start.date().isoformat()
+        end_date = end.date().isoformat()
+
         # MAIN QUERY
         r1 = requests.post(
             "https://api.cloudflare.com/client/v4/graphql",
@@ -201,8 +204,8 @@ class CloudflareAPI:
                 "query": QUERY_MAIN,
                 "variables": {
                     "zoneTag": self.zone_id,
-                    "start": start.isoformat(timespec="seconds") + "Z",
-                    "end": end.isoformat(timespec="seconds") + "Z",
+                    "start": start_date,
+                    "end": end_date,
                 },
             }),
             timeout=15,
@@ -212,30 +215,42 @@ class CloudflareAPI:
             _LOGGER.error("Cloudflare main query errors: %s", r1.get("errors"))
 
         try:
-            group = r1["data"]["viewer"]["zones"][0]["httpRequests1dGroups"][0]
-            s = group["sum"]
-            u = group["uniq"]
+            zones = r1.get("data", {}).get("viewer", {}).get("zones") or []
+            groups = zones[0].get("httpRequests1dGroups") if zones else None
+            if not groups:
+                _LOGGER.debug("No main GraphQL data returned")
+            else:
+                group = groups[0]
+                s = group.get("sum", {})
+                u = group.get("uniq", {})
 
-            self.data["requests_all"] = s["requests"]
-            self.data["requests_cached"] = s["cachedRequests"]
-            self.data["requests_uncached"] = s["requests"] - s["cachedRequests"]
-            self.data["requests_threats"] = s["threats"]
-            self.data["requests_ssl_encrypted"] = s["encryptedRequests"]
-            self.data["requests_ssl_unencrypted"] = s["unencryptedRequests"]
+                requests_val = s.get("requests") or s.get("requestCount")
+                cached_val = s.get("cachedRequests") or 0
 
-            self.data["bandwidth_all"] = s["bytes"]
-            self.data["bandwidth_cached"] = s["cachedBytes"]
-            self.data["bandwidth_uncached"] = s["bytes"] - s["cachedBytes"]
+                if requests_val is not None:
+                    self.data["requests_all"] = requests_val
+                    self.data["requests_cached"] = cached_val
+                    self.data["requests_uncached"] = requests_val - cached_val
 
-            self.data["uniques_all"] = u["uniques"]
+                self.data["requests_threats"] = s.get("threats")
+                self.data["requests_ssl_encrypted"] = s.get("encryptedRequests")
+                self.data["requests_ssl_unencrypted"] = s.get("unencryptedRequests")
 
-            for status in s["status"]:
-                code = status["code"]
-                count = status["count"]
-                self.data[f"status_{code}"] = count
+                self.data["bandwidth_all"] = s.get("bytes")
+                self.data["bandwidth_cached"] = s.get("cachedBytes")
+                if s.get("bytes") is not None and s.get("cachedBytes") is not None:
+                    self.data["bandwidth_uncached"] = s.get("bytes") - s.get("cachedBytes")
 
-            self.data["edge_requests"] = s["edgeResponseBytes"]
-            self.data["origin_requests"] = s["originResponseBytes"]
+                self.data["uniques_all"] = u.get("uniques")
+
+                for status in s.get("status", []):
+                    code = status.get("code")
+                    count = status.get("count")
+                    if code is not None:
+                        self.data[f"status_{code}"] = count
+
+                self.data["edge_requests"] = s.get("edgeResponseBytes")
+                self.data["origin_requests"] = s.get("originResponseBytes")
 
         except Exception as e:
             _LOGGER.exception("Error parsing main GraphQL: %s", e)
@@ -259,15 +274,24 @@ class CloudflareAPI:
             _LOGGER.error("Cloudflare live query errors: %s", r2.get("errors"))
 
         try:
-            live = r2["data"]["viewer"]["zones"][0]["httpRequestsAdaptiveGroups"][0]
-            s = live["sum"]
-            u = live["uniq"]
+            zones = r2.get("data", {}).get("viewer", {}).get("zones") or []
+            groups = zones[0].get("httpRequestsAdaptiveGroups") if zones else None
+            if not groups:
+                _LOGGER.debug("No live GraphQL data returned")
+            else:
+                live = groups[0]
+                s = live.get("sum", {})
+                u = live.get("uniq", {})
 
-            self.data["live_requests"] = s["requests"]
-            self.data["live_bandwidth"] = s["bytes"]
-            self.data["live_threats"] = s["threats"]
-            self.data["live_bots"] = s["botRequests"]
-            self.data["live_uniques"] = u["uniques"]
+                requests_val = s.get("requests") or s.get("requestCount")
+                bots_val = s.get("botRequests") or s.get("botDetectedRequests")
+                threats_val = s.get("threats") or s.get("threatDetectedRequests")
+
+                self.data["live_requests"] = requests_val
+                self.data["live_bandwidth"] = s.get("bytes")
+                self.data["live_threats"] = threats_val
+                self.data["live_bots"] = bots_val
+                self.data["live_uniques"] = u.get("uniques")
 
         except Exception as e:
             _LOGGER.exception("Error parsing live GraphQL: %s", e)
@@ -280,8 +304,8 @@ class CloudflareAPI:
                 "query": QUERY_TOP,
                 "variables": {
                     "zoneTag": self.zone_id,
-                    "start": start.isoformat(timespec="seconds") + "Z",
-                    "end": end.isoformat(timespec="seconds") + "Z",
+                    "start": start_date,
+                    "end": end_date,
                 },
             }),
             timeout=15,
@@ -291,31 +315,35 @@ class CloudflareAPI:
             _LOGGER.error("Cloudflare top query errors: %s", r3.get("errors"))
 
         try:
-            zones = r3["data"]["viewer"]["zones"][0]
+            zones = r3.get("data", {}).get("viewer", {}).get("zones") or []
+            if not zones:
+                _LOGGER.debug("No top GraphQL data returned")
+            else:
+                zone = zones[0]
 
-            self.data["top_countries"] = json.dumps([
-                {
-                    "country": item["dimensions"]["clientCountryName"],
-                    "requests": item["sum"]["requests"],
-                }
-                for item in zones["countries"]
-            ])
+                self.data["top_countries"] = json.dumps([
+                    {
+                        "country": item.get("dimensions", {}).get("clientCountryName"),
+                        "requests": item.get("sum", {}).get("requests") or item.get("sum", {}).get("requestCount"),
+                    }
+                    for item in zone.get("countries", [])
+                ])
 
-            self.data["top_urls"] = json.dumps([
-                {
-                    "url": item["dimensions"]["clientRequestPath"],
-                    "requests": item["sum"]["requests"],
-                }
-                for item in zones["urls"]
-            ])
+                self.data["top_urls"] = json.dumps([
+                    {
+                        "url": item.get("dimensions", {}).get("clientRequestPath"),
+                        "requests": item.get("sum", {}).get("requests") or item.get("sum", {}).get("requestCount"),
+                    }
+                    for item in zone.get("urls", [])
+                ])
 
-            self.data["top_useragents"] = json.dumps([
-                {
-                    "agent": item["dimensions"]["userAgent"],
-                    "requests": item["sum"]["requests"],
-                }
-                for item in zones["agents"]
-            ])
+                self.data["top_useragents"] = json.dumps([
+                    {
+                        "agent": item.get("dimensions", {}).get("userAgent"),
+                        "requests": item.get("sum", {}).get("requests") or item.get("sum", {}).get("requestCount"),
+                    }
+                    for item in zone.get("agents", [])
+                ])
 
         except Exception as e:
             _LOGGER.exception("Error parsing top GraphQL: %s", e)
