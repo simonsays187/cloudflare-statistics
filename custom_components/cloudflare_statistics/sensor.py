@@ -57,7 +57,7 @@ SENSOR_MAP = {
 }
 
 # GraphQL Queries
-# Daily totals (previous 24h)
+# Daily totals (previous 24h) using supported fields
 QUERY_MAIN = """
 query ($zoneTag: String!, $start: Date!, $end: Date!) {
     viewer {
@@ -70,25 +70,18 @@ query ($zoneTag: String!, $start: Date!, $end: Date!) {
                     requests
                     cachedRequests
                     threats
-                    encryptedRequests
                     bytes
                     cachedBytes
-                    originResponseBytes
-                    status {
-                        code
-                        count
-                    }
+                    status { code count }
                 }
-                uniq {
-                    uniques
-                }
+                uniq { uniques }
             }
         }
     }
 }
 """
 
-# Live traffic (rolling 5 minutes) — request only fields that exist
+# Live traffic (rolling 5 minutes) — keep minimal stable fields
 QUERY_LIVE = """
 query ($zoneTag: String!, $start: DateTime!, $end: DateTime!) {
     viewer {
@@ -97,19 +90,15 @@ query ($zoneTag: String!, $start: DateTime!, $end: DateTime!) {
                 limit: 1
                 filter: { datetime_geq: $start, datetime_leq: $end }
             ) {
-                sum {
-                    bytes
-                }
-                uniq {
-                    uniques
-                }
+                sum { requests bytes threats } 
+                uniq { uniques }
             }
         }
     }
 }
 """
 
-# Top lists for previous 24h
+# Top lists for previous 24h — supported dims
 QUERY_TOP = """
 query ($zoneTag: String!, $start: Date!, $end: Date!) {
     viewer {
@@ -254,7 +243,7 @@ class CloudflareAPI:
                         self.data[f"status_{code}"] = count
 
                 self.data["edge_requests"] = None
-                self.data["origin_requests"] = s.get("originResponseBytes")
+                self.data["origin_requests"] = None
 
         except Exception as e:
             _LOGGER.exception("Error parsing main GraphQL: %s", e)
@@ -299,7 +288,7 @@ class CloudflareAPI:
                 requests_val = s.get("requests")
                 self.data["live_requests"] = requests_val
                 self.data["live_bandwidth"] = s.get("bytes")
-                self.data["live_threats"] = None
+                self.data["live_threats"] = s.get("threats")
                 self.data["live_bots"] = None
                 self.data["live_uniques"] = u.get("uniques")
 
