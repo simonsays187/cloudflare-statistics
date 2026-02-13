@@ -73,7 +73,6 @@ query ($zoneTag: String!, $start: Date!, $end: Date!) {
                     encryptedRequests
                     bytes
                     cachedBytes
-                    edgeResponseBytes
                     originResponseBytes
                     status {
                         code
@@ -89,7 +88,7 @@ query ($zoneTag: String!, $start: Date!, $end: Date!) {
 }
 """
 
-# Live traffic (rolling 5 minutes)
+# Live traffic (rolling 5 minutes) — request only fields that exist
 QUERY_LIVE = """
 query ($zoneTag: String!, $start: DateTime!, $end: DateTime!) {
     viewer {
@@ -99,10 +98,7 @@ query ($zoneTag: String!, $start: DateTime!, $end: DateTime!) {
                 filter: { datetime_geq: $start, datetime_leq: $end }
             ) {
                 sum {
-                    requestCount
                     bytes
-                    threatDetectedRequests
-                    botDetectedRequests
                 }
                 uniq {
                     uniques
@@ -123,7 +119,7 @@ query ($zoneTag: String!, $start: Date!, $end: Date!) {
                 orderBy: [sum_requests_DESC]
                 filter: { date_geq: $start, date_leq: $end }
             ) {
-                dimensions { clientCountry }
+                dimensions { clientCountryName }
                 sum { requests }
             }
             urls: httpRequests1dGroups(
@@ -196,19 +192,24 @@ class CloudflareAPI:
         end_date = end.date().isoformat()
 
         # MAIN QUERY
-        r1 = requests.post(
-            "https://api.cloudflare.com/client/v4/graphql",
-            headers=headers,
-            data=json.dumps({
-                "query": QUERY_MAIN,
-                "variables": {
-                    "zoneTag": self.zone_id,
-                    "start": start_date,
-                    "end": end_date,
-                },
-            }),
-            timeout=15,
-        ).json()
+        try:
+            r1_resp = requests.post(
+                "https://api.cloudflare.com/client/v4/graphql",
+                headers=headers,
+                data=json.dumps({
+                    "query": QUERY_MAIN,
+                    "variables": {
+                        "zoneTag": self.zone_id,
+                        "start": start_date,
+                        "end": end_date,
+                    },
+                }),
+                timeout=15,
+            )
+            r1 = r1_resp.json()
+        except Exception:
+            _LOGGER.exception("Cloudflare main query request failed")
+            r1 = {}
 
         if not isinstance(r1, dict):
             _LOGGER.error("Cloudflare main query returned non-dict response")
@@ -227,7 +228,7 @@ class CloudflareAPI:
                 s = group.get("sum", {})
                 u = group.get("uniq", {})
 
-                requests_val = s.get("requests") or s.get("requestCount")
+                requests_val = s.get("requests")
                 cached_val = s.get("cachedRequests") or 0
 
                 if requests_val is not None:
@@ -252,26 +253,31 @@ class CloudflareAPI:
                     if code is not None:
                         self.data[f"status_{code}"] = count
 
-                self.data["edge_requests"] = s.get("edgeResponseBytes")
+                self.data["edge_requests"] = None
                 self.data["origin_requests"] = s.get("originResponseBytes")
 
         except Exception as e:
             _LOGGER.exception("Error parsing main GraphQL: %s", e)
 
         # LIVE QUERY
-        r2 = requests.post(
-            "https://api.cloudflare.com/client/v4/graphql",
-            headers=headers,
-            data=json.dumps({
-                "query": QUERY_LIVE,
-                "variables": {
-                    "zoneTag": self.zone_id,
-                    "start": live_start.isoformat(timespec="seconds") + "Z",
-                    "end": end.isoformat(timespec="seconds") + "Z",
-                },
-            }),
-            timeout=15,
-        ).json()
+        try:
+            r2_resp = requests.post(
+                "https://api.cloudflare.com/client/v4/graphql",
+                headers=headers,
+                data=json.dumps({
+                    "query": QUERY_LIVE,
+                    "variables": {
+                        "zoneTag": self.zone_id,
+                        "start": live_start.isoformat(timespec="seconds") + "Z",
+                        "end": end.isoformat(timespec="seconds") + "Z",
+                    },
+                }),
+                timeout=15,
+            )
+            r2 = r2_resp.json()
+        except Exception:
+            _LOGGER.exception("Cloudflare live query request failed")
+            r2 = {}
 
         if not isinstance(r2, dict):
             _LOGGER.error("Cloudflare live query returned non-dict response")
@@ -290,33 +296,35 @@ class CloudflareAPI:
                 s = live.get("sum", {})
                 u = live.get("uniq", {})
 
-                requests_val = s.get("requestCount") or s.get("requests")
-                bots_val = s.get("botDetectedRequests") or s.get("botRequests")
-                threats_val = s.get("threatDetectedRequests") or s.get("threats")
-
+                requests_val = s.get("requests")
                 self.data["live_requests"] = requests_val
                 self.data["live_bandwidth"] = s.get("bytes")
-                self.data["live_threats"] = threats_val
-                self.data["live_bots"] = bots_val
+                self.data["live_threats"] = None
+                self.data["live_bots"] = None
                 self.data["live_uniques"] = u.get("uniques")
 
         except Exception as e:
             _LOGGER.exception("Error parsing live GraphQL: %s", e)
 
         # TOP QUERY
-        r3 = requests.post(
-            "https://api.cloudflare.com/client/v4/graphql",
-            headers=headers,
-            data=json.dumps({
-                "query": QUERY_TOP,
-                "variables": {
-                    "zoneTag": self.zone_id,
-                    "start": start_date,
-                    "end": end_date,
-                },
-            }),
-            timeout=15,
-        ).json()
+        try:
+            r3_resp = requests.post(
+                "https://api.cloudflare.com/client/v4/graphql",
+                headers=headers,
+                data=json.dumps({
+                    "query": QUERY_TOP,
+                    "variables": {
+                        "zoneTag": self.zone_id,
+                        "start": start_date,
+                        "end": end_date,
+                    },
+                }),
+                timeout=15,
+            )
+            r3 = r3_resp.json()
+        except Exception:
+            _LOGGER.exception("Cloudflare top query request failed")
+            r3 = {}
 
         if not isinstance(r3, dict):
             _LOGGER.error("Cloudflare top query returned non-dict response")
