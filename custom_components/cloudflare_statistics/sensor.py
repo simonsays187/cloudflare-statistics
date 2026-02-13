@@ -71,7 +71,6 @@ query ($zoneTag: String!, $start: Date!, $end: Date!) {
                     cachedRequests
                     threats
                     encryptedRequests
-                    unencryptedRequests
                     bytes
                     cachedBytes
                     edgeResponseBytes
@@ -100,10 +99,10 @@ query ($zoneTag: String!, $start: DateTime!, $end: DateTime!) {
                 filter: { datetime_geq: $start, datetime_leq: $end }
             ) {
                 sum {
-                    requests
+                    requestCount
                     bytes
-                    threats
-                    botRequests
+                    threatDetectedRequests
+                    botDetectedRequests
                 }
                 uniq {
                     uniques
@@ -124,7 +123,7 @@ query ($zoneTag: String!, $start: Date!, $end: Date!) {
                 orderBy: [sum_requests_DESC]
                 filter: { date_geq: $start, date_leq: $end }
             ) {
-                dimensions { clientCountryName }
+                dimensions { clientCountry }
                 sum { requests }
             }
             urls: httpRequests1dGroups(
@@ -211,6 +210,10 @@ class CloudflareAPI:
             timeout=15,
         ).json()
 
+        if not isinstance(r1, dict):
+            _LOGGER.error("Cloudflare main query returned non-dict response")
+            r1 = {}
+
         if r1.get("errors"):
             _LOGGER.error("Cloudflare main query errors: %s", r1.get("errors"))
 
@@ -234,7 +237,7 @@ class CloudflareAPI:
 
                 self.data["requests_threats"] = s.get("threats")
                 self.data["requests_ssl_encrypted"] = s.get("encryptedRequests")
-                self.data["requests_ssl_unencrypted"] = s.get("unencryptedRequests")
+                self.data["requests_ssl_unencrypted"] = None
 
                 self.data["bandwidth_all"] = s.get("bytes")
                 self.data["bandwidth_cached"] = s.get("cachedBytes")
@@ -270,6 +273,10 @@ class CloudflareAPI:
             timeout=15,
         ).json()
 
+        if not isinstance(r2, dict):
+            _LOGGER.error("Cloudflare live query returned non-dict response")
+            r2 = {}
+
         if r2.get("errors"):
             _LOGGER.error("Cloudflare live query errors: %s", r2.get("errors"))
 
@@ -283,9 +290,9 @@ class CloudflareAPI:
                 s = live.get("sum", {})
                 u = live.get("uniq", {})
 
-                requests_val = s.get("requests") or s.get("requestCount")
-                bots_val = s.get("botRequests") or s.get("botDetectedRequests")
-                threats_val = s.get("threats") or s.get("threatDetectedRequests")
+                requests_val = s.get("requestCount") or s.get("requests")
+                bots_val = s.get("botDetectedRequests") or s.get("botRequests")
+                threats_val = s.get("threatDetectedRequests") or s.get("threats")
 
                 self.data["live_requests"] = requests_val
                 self.data["live_bandwidth"] = s.get("bytes")
@@ -310,6 +317,10 @@ class CloudflareAPI:
             }),
             timeout=15,
         ).json()
+
+        if not isinstance(r3, dict):
+            _LOGGER.error("Cloudflare top query returned non-dict response")
+            r3 = {}
 
         if r3.get("errors"):
             _LOGGER.error("Cloudflare top query errors: %s", r3.get("errors"))
