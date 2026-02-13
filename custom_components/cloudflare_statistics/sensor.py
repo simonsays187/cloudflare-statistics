@@ -1,10 +1,11 @@
 import json
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, Optional
 
 import requests
-from homeassistant.components.sensor import SensorEntity
+from homeassistant.components.sensor import SensorEntity, SensorEntityDescription
 from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfInformation, UnitOfTime
@@ -62,7 +63,6 @@ query (
             countryToday: httpRequestsAdaptiveGroups(
                 limit: 2000
                 filter: { datetime_geq: $todayStart, datetime_leq: $todayEnd }
-                orderBy: [sum_requests_DESC]
             ) {
                 dimensions { clientCountryName }
                 sum { requests }
@@ -71,7 +71,6 @@ query (
             countryWeek: httpRequestsAdaptiveGroups(
                 limit: 2000
                 filter: { datetime_geq: $weekStart, datetime_leq: $todayEnd }
-                orderBy: [sum_requests_DESC]
             ) {
                 dimensions { clientCountryName }
                 sum { requests }
@@ -80,7 +79,6 @@ query (
             countryMonth: httpRequestsAdaptiveGroups(
                 limit: 2000
                 filter: { datetime_geq: $monthStartDt, datetime_leq: $todayEnd }
-                orderBy: [sum_requests_DESC]
             ) {
                 dimensions { clientCountryName }
                 sum { requests }
@@ -115,26 +113,10 @@ query (
 """
 
 
-class CloudflareSensorDescription:
-    def __init__(
-        self,
-        key: str,
-        name: str,
-        value_fn: Callable[[Dict[str, Any]], Any],
-        unit: Optional[str] = None,
-        device_class: Optional[SensorDeviceClass] = None,
-        state_class: Optional[SensorStateClass] = SensorStateClass.MEASUREMENT,
-        attr_fn: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
-        icon: Optional[str] = None,
-    ):
-        self.key = key
-        self.name = name
-        self.value_fn = value_fn
-        self.unit = unit
-        self.device_class = device_class
-        self.state_class = state_class
-        self.attr_fn = attr_fn
-        self.icon = icon
+@dataclass
+class CloudflareSensorDescription(SensorEntityDescription):
+    value_fn: Callable[[Dict[str, Any]], Any] | None = None
+    attr_fn: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None
 
 
 async def async_setup_entry(
@@ -362,6 +344,10 @@ class CloudflareAPI:
         if result.get("errors"):
             _LOGGER.error("Cloudflare GraphQL errors: %s", result.get("errors"))
 
+        if not result.get("data"):
+            _LOGGER.error("Cloudflare GraphQL returned no data")
+            return
+
         try:
             zones = result.get("data", {}).get("viewer", {}).get("zones") or []
             zone = zones[0] if zones else {}
@@ -452,8 +438,14 @@ class CloudflareAPI:
         return {"top_country": top_country, "top_requests": top_requests, "countries": country_map}
 
     def _parse_web_analytics(self, zone: Dict[str, Any]) -> None:
-        for key in ("web_today", "web_week", "web_month"):
-            groups = zone.get(key) or []
+        alias_map = {
+            "web_today": "webToday",
+            "web_week": "webWeek",
+            "web_month": "webMonth",
+        }
+
+        for key, gql_key in alias_map.items():
+            groups = zone.get(gql_key) or []
             visits = 0
             page_views = 0
             load_times = []
@@ -480,7 +472,7 @@ class CloudflareSensor(SensorEntity):
     def __init__(self, api: CloudflareAPI, entry: ConfigEntry, description: CloudflareSensorDescription) -> None:
         self.api = api
         self._entry = entry
-        self.entity_description = description
+        self.entity_description: CloudflareSensorDescription = description
         self._attr_name = f"Cloudflare {description.name}"
         self._attr_unique_id = f"cloudflare_{entry.entry_id}_{description.key}"
         self._attr_device_class = description.device_class
@@ -504,7 +496,8 @@ class CloudflareSensor(SensorEntity):
         self._convert_bandwidth()
 
         try:
-            self._state = self.entity_description.value_fn(self.api.data)
+            value_fn = self.entity_description.value_fn or (lambda _: None)
+            self._state = value_fn(self.api.data)
         except Exception:
             self._state = None
 
@@ -529,13 +522,16 @@ class CloudflareSensor(SensorEntity):
         if unit is None:
             return
 
-        factor = UNIT_FACTORS.get(unit) if isinstance(unit, str) else None
+        factor_map_obj = {
+            UnitOfInformation.BYTES: UNIT_FACTORS["B"],
+            UnitOfInformation.KILOBYTES: UNIT_FACTORS["KB"],
+            UnitOfInformation.MEGABYTES: UNIT_FACTORS["MB"],
+            UnitOfInformation.GIGABYTES: UNIT_FACTORS["GB"],
+        }
+
+        factor = UNIT_FACTORS.get(unit) if isinstance(unit, str) else factor_map_obj.get(unit)
         if factor is None:
-            # Home Assistant constants return objects, not strings
-            if unit == UnitOfInformation.BYTES:
-                factor = UNIT_FACTORS["B"]
-            else:
-                return
+            return
 
         for key in ("bandwidth_today", "bandwidth_week", "bandwidth_month"):
             raw_key = f"{key}_bytes"
