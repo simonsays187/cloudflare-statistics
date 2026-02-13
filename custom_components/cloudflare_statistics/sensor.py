@@ -38,15 +38,11 @@ def _to_rfc3339(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-QUERY_ANALYTICS = """
+QUERY_REQUESTS = """
 query (
     $zoneTag: String!,
     $monthStart: Date!,
-    $todayDate: Date!,
-    $todayStart: DateTime!,
-    $todayEnd: DateTime!,
-    $weekStart: DateTime!,
-    $monthStartDt: DateTime!
+    $todayDate: Date!
 ) {
     viewer {
         zones(filter: { zoneTag: $zoneTag }) {
@@ -59,7 +55,22 @@ query (
                 sum { requests bytes }
                 uniq { uniques }
             }
+        }
+    }
+}
+"""
 
+
+QUERY_COUNTRY_WEB = """
+query (
+    $zoneTag: String!,
+    $todayStart: DateTime!,
+    $todayEnd: DateTime!,
+    $weekStart: DateTime!,
+    $monthStartDt: DateTime!
+) {
+    viewer {
+        zones(filter: { zoneTag: $zoneTag }) {
             countryToday: httpRequestsAdaptiveGroups(
                 limit: 2000
                 filter: { datetime_geq: $todayStart, datetime_leq: $todayEnd }
@@ -295,6 +306,7 @@ class CloudflareAPI:
         self.zone_id = zone_id
         self.api_token = api_token
         self.data: Dict[str, Any] = {}
+        self._country_web_supported = True
 
     @Throttle(MIN_TIME_BETWEEN_UPDATES)
     def update(self) -> None:
@@ -312,12 +324,60 @@ class CloudflareAPI:
         week_start = today_start - timedelta(days=6)
         month_start = today_start - timedelta(days=29)
 
+        self._fetch_requests(headers, today_date, month_start)
+
+        if self._country_web_supported:
+            self._fetch_country_and_web(headers, today_start, today_end, week_start, month_start)
+
+    def _fetch_requests(self, headers: Dict[str, str], today_date: datetime.date, month_start: datetime) -> None:
         payload = {
-            "query": QUERY_ANALYTICS,
+            "query": QUERY_REQUESTS,
             "variables": {
                 "zoneTag": self.zone_id,
                 "monthStart": month_start.date().isoformat(),
                 "todayDate": today_date.isoformat(),
+            },
+        }
+
+        try:
+            resp = requests.post(
+                "https://api.cloudflare.com/client/v4/graphql",
+                headers=headers,
+                data=json.dumps(payload),
+                timeout=20,
+            )
+            result = resp.json()
+        except Exception:
+            _LOGGER.exception("Cloudflare requests query failed")
+            return
+
+        if not isinstance(result, dict):
+            _LOGGER.error("Unexpected Cloudflare response type (requests): %s", type(result))
+            return
+
+        if result.get("errors"):
+            _LOGGER.error("Cloudflare requests GraphQL errors: %s", result.get("errors"))
+            return
+
+        try:
+            zones = result.get("data", {}).get("viewer", {}).get("zones") or []
+            zone = zones[0] if zones else {}
+            self._parse_requests(zone, today_date, month_start)
+        except Exception:
+            _LOGGER.exception("Failed to parse Cloudflare requests response")
+
+    def _fetch_country_and_web(
+        self,
+        headers: Dict[str, str],
+        today_start: datetime,
+        today_end: datetime,
+        week_start: datetime,
+        month_start: datetime,
+    ) -> None:
+        payload = {
+            "query": QUERY_COUNTRY_WEB,
+            "variables": {
+                "zoneTag": self.zone_id,
                 "todayStart": _to_rfc3339(today_start),
                 "todayEnd": _to_rfc3339(today_end),
                 "weekStart": _to_rfc3339(week_start),
@@ -334,34 +394,36 @@ class CloudflareAPI:
             )
             result = resp.json()
         except Exception:
-            _LOGGER.exception("Cloudflare analytics query failed")
-            result = {}
+            _LOGGER.exception("Cloudflare country/web query failed")
+            return
 
         if not isinstance(result, dict):
-            _LOGGER.error("Unexpected Cloudflare response type: %s", type(result))
+            _LOGGER.error("Unexpected Cloudflare response type (country/web): %s", type(result))
             return
 
         if result.get("errors"):
-            _LOGGER.error("Cloudflare GraphQL errors: %s", result.get("errors"))
+            _LOGGER.warning("Cloudflare country/web GraphQL errors: %s", result.get("errors"))
+            self._country_web_supported = False
+            return
 
         if not result.get("data"):
-            _LOGGER.error("Cloudflare GraphQL returned no data")
+            _LOGGER.warning("Cloudflare country/web GraphQL returned no data; disabling country/web sensors")
+            self._country_web_supported = False
             return
 
         try:
             zones = result.get("data", {}).get("viewer", {}).get("zones") or []
             zone = zones[0] if zones else {}
-            self._parse_requests(zone, today_date, week_start, month_start)
             self._parse_country(zone)
             self._parse_web_analytics(zone)
         except Exception:
-            _LOGGER.exception("Failed to parse Cloudflare response")
+            _LOGGER.warning("Failed to parse Cloudflare country/web response; disabling country/web sensors")
+            self._country_web_supported = False
 
     def _parse_requests(
         self,
         zone: Dict[str, Any],
         today_date: datetime.date,
-        week_start: datetime,
         month_start: datetime,
     ) -> None:
         groups = zone.get("httpRequests1dGroups") or []
@@ -391,7 +453,7 @@ class CloudflareAPI:
                 views_today += req
                 uniques_today += uni
                 bytes_today += bts
-            if week_start.date() <= bucket_date <= today_date:
+            if (today_date - timedelta(days=6)) <= bucket_date <= today_date:
                 views_week += req
                 uniques_week += uni
                 bytes_week += bts
@@ -481,6 +543,7 @@ class CloudflareSensor(SensorEntity):
         self._attr_icon = description.icon
         self._state: Any = None
         self._attributes: Dict[str, Any] = {}
+        self._is_country_web = description.key.startswith("country_") or description.key.startswith("web_") or description.key.startswith("page_") or description.key.startswith("visits")
 
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
@@ -516,6 +579,12 @@ class CloudflareSensor(SensorEntity):
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
         return self._attributes
+
+    @property
+    def available(self) -> bool:
+        if self._is_country_web and not self.api._country_web_supported:
+            return False
+        return super().available
 
     def _convert_bandwidth(self) -> None:
         unit = self._attr_native_unit_of_measurement
