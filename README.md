@@ -34,9 +34,9 @@ All sensors are created automatically after setup and include:
 
 1. Open Home Assistant  
 2. Go to **HACS → Integrations → Custom repositories**  
-3. Add your repository URL:  
+3. Add repository URL:  
    ```
-   https://github.com/DEINNAME/cloudflare-statistics
+   https://github.com/simonsays187/cloudflare-statistics
    ```
 4. Category: **Integration**  
 5. Click **Add**

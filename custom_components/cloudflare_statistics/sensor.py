@@ -1,6 +1,8 @@
-import requests
 import json
+import logging
 from datetime import datetime, timedelta
+
+import requests
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.util import Throttle
 from homeassistant.config_entries import ConfigEntry
@@ -14,6 +16,7 @@ from .const import (
 )
 
 MIN_TIME_BETWEEN_UPDATES = timedelta(seconds=60)
+_LOGGER = logging.getLogger(__name__)
 
 # Sensor definitions
 SENSOR_MAP = {
@@ -89,12 +92,12 @@ query ($zoneTag: String!, $start: Time!, $end: Time!) {
 
 # Live traffic (rolling 5 minutes)
 QUERY_LIVE = """
-query ($zoneTag: String!) {
+query ($zoneTag: String!, $start: Time!, $end: Time!) {
     viewer {
         zones(filter: { zoneTag: $zoneTag }) {
             httpRequestsAdaptiveGroups(
                 limit: 1
-                filter: { datetime_geq: "-300 seconds" }
+                filter: { datetime_geq: $start, datetime_leq: $end }
             ) {
                 sum {
                     requests
@@ -188,6 +191,7 @@ class CloudflareAPI:
 
         end = datetime.utcnow()
         start = end - timedelta(days=1)
+        live_start = end - timedelta(minutes=5)
 
         # MAIN QUERY
         r1 = requests.post(
@@ -203,6 +207,9 @@ class CloudflareAPI:
             }),
             timeout=15,
         ).json()
+
+        if r1.get("errors"):
+            _LOGGER.error("Cloudflare main query errors: %s", r1.get("errors"))
 
         try:
             group = r1["data"]["viewer"]["zones"][0]["httpRequests1dGroups"][0]
@@ -231,7 +238,7 @@ class CloudflareAPI:
             self.data["origin_requests"] = s["originResponseBytes"]
 
         except Exception as e:
-            print("Error parsing main GraphQL:", e, r1)
+            _LOGGER.exception("Error parsing main GraphQL: %s", e)
 
         # LIVE QUERY
         r2 = requests.post(
@@ -239,10 +246,17 @@ class CloudflareAPI:
             headers=headers,
             data=json.dumps({
                 "query": QUERY_LIVE,
-                "variables": {"zoneTag": self.zone_id},
+                "variables": {
+                    "zoneTag": self.zone_id,
+                    "start": live_start.isoformat(timespec="seconds") + "Z",
+                    "end": end.isoformat(timespec="seconds") + "Z",
+                },
             }),
             timeout=15,
         ).json()
+
+        if r2.get("errors"):
+            _LOGGER.error("Cloudflare live query errors: %s", r2.get("errors"))
 
         try:
             live = r2["data"]["viewer"]["zones"][0]["httpRequestsAdaptiveGroups"][0]
@@ -256,7 +270,7 @@ class CloudflareAPI:
             self.data["live_uniques"] = u["uniques"]
 
         except Exception as e:
-            print("Error parsing live GraphQL:", e, r2)
+            _LOGGER.exception("Error parsing live GraphQL: %s", e)
 
         # TOP QUERY
         r3 = requests.post(
@@ -272,6 +286,9 @@ class CloudflareAPI:
             }),
             timeout=15,
         ).json()
+
+        if r3.get("errors"):
+            _LOGGER.error("Cloudflare top query errors: %s", r3.get("errors"))
 
         try:
             zones = r3["data"]["viewer"]["zones"][0]
@@ -301,7 +318,7 @@ class CloudflareAPI:
             ])
 
         except Exception as e:
-            print("Error parsing top GraphQL:", e, r3)
+            _LOGGER.exception("Error parsing top GraphQL: %s", e)
 
 
 # ---------------------------------------------------------
