@@ -7,12 +7,7 @@ All sensors are created automatically after setup and include:
 
 - Pageviews  
 - Unique visitors  
-- Cached / uncached requests  
-- Bot traffic  
-- Threats  
 - Bandwidth usage  
-- SSL encrypted / unencrypted requests  
-- HTTP status code counts  
 - And more  
 
 ---
@@ -123,40 +118,40 @@ Copy this token into the integration setup in Home Assistant.
 
 # 📊 Available Sensors
 
-The integration automatically creates sensors for all values in:
-
-```
-result.totals
-```
+The integration automatically creates sensors for all values available:
 
 This includes:
 
 ### Requests
-- `requests.all`
-- `requests.cached`
-- `requests.uncached`
-- `requests.bot`
-- `requests.ssl.encrypted`
-- `requests.ssl.unencrypted`
+- `views_today`
+- `views_week`
+- `views_month`
 
 ### Unique Visitors
-- `uniques.all`
-
-### Threats
-- `threats.all`
-- `threats.blocked`
+- `uniques_today`
+- `uniques_week`
+- `uniques_month`
 
 ### Bandwidth
-- `bandwidth.all`
-- `bandwidth.cached`
-- `bandwidth.uncached`
+- `bandwidth_today`
+- `bandwidth_week`
+- `bandwidth_month`
 
-Each value becomes a sensor, for example:
+### Countries (only for non free Plan)
+- `country_today`
+- `country_week`
+- `country_month`
 
-- `sensor.cloudflare_requests_all`
-- `sensor.cloudflare_unique_visitors`
-- `sensor.cloudflare_bandwidth_all`
-- `sensor.cloudflare_threats_all`
+### Web Analytics (only for non free Plan)
+- `page_load_today`
+- `page_load_week`
+- `page_load_month`
+- `visits_today`
+- `visits_week`
+- `visits_month`
+- `page_views_today`
+- `page_views_week`
+- `page_views_month`
 
 ---
 
@@ -180,3 +175,4 @@ Each value becomes a sensor, for example:
     ```
 
 
+Brought to you by HumanEngine: https://humanengine.net
